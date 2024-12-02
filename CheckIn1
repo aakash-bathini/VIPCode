@@ -21,7 +21,7 @@ ang_dist = 3.0/2 * np.pi
 time = np.linspace(0, ang_dist, num_pts)
 meas = [np.array(measure(t)) for t in time]
 
-# This is for plotting don't use this for your filter (its perfect data)
+# This is for plotting don't use this for your filter (its perfect data).
 tp = [true_path(t) for t in np.linspace(0,ang_dist,num_pts)]
 
 ### EDIT BELOW THIS ###
