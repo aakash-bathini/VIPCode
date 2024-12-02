@@ -1,0 +1,70 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+R = 10  
+sig = 0.5  
+
+### DONT EDIT THIS ### (Make path, measurements)
+def true_path(time):
+    pos_x = R * np.cos(time)
+    pos_y = R * np.sin(time)
+    return pos_x, pos_y
+
+def measure(time):
+    noise = np.random.normal(0, sig, 2)
+    pos_x = R * np.cos(time)
+    pos_y = R * np.sin(time)
+    return pos_x + noise[0], pos_y + noise[1]
+
+num_pts = 50
+ang_dist = 3.0/2 * np.pi
+time = np.linspace(0, ang_dist, num_pts)
+meas = [np.array(measure(t)) for t in time]
+
+# This is for plotting don't use this for your filter (its perfect data)
+tp = [true_path(t) for t in np.linspace(0,ang_dist,num_pts)]
+
+### EDIT BELOW THIS ###
+
+def kalman_filter(z, x, P, F, H, R, Q):
+    x = F @ x 
+    P = F @ P @ F.T + Q  
+
+    y = z - H @ x  
+    S = H @ P @ H.T + R  
+    K = P @ H.T @ np.linalg.inv(S)  
+    x = x + K @ y  
+    P = (np.eye(4) - K @ H) @ P  
+
+    return x, P
+
+dt = time[1] - time[0]  
+F = np.array([[1, 0, dt, 0],
+              [0, 1, 0, dt],
+              [0, 0, 1, 0],
+              [0, 0, 0, 1]])
+H = np.array([[1, 0, 0, 0],  
+              [0, 1, 0, 0]])  
+Q = np.eye(4) * 0.1 
+R = np.eye(2) * sig**2  
+x = np.array([meas[0][0], meas[0][1], 0, 0])  
+P = np.eye(4) * 1000  
+
+filtered_states = []
+for z in meas:
+    x, P = kalman_filter(np.array(z), x, P, F, H, R, Q)
+    filtered_states.append(x[:2])  
+
+data_x, data_y = zip(*filtered_states)
+
+# Plotting (Shouldn't have to edit)
+plt.figure("Position")
+plt.plot(*zip(*meas), 'k.')
+plt.plot(data_x, data_y, "-r")
+plt.plot(*zip(*tp), 'b-')
+plt.title("Position of Robot over Time")
+plt.xlabel("x position")
+plt.ylabel("y position")
+plt.axis("equal")
+plt.grid("show")
+plt.show()
