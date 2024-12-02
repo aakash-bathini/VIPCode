@@ -1,0 +1,192 @@
+import numpy as np
+from casadi import *
+import matplotlib.pyplot as plt
+
+class DronePositionEstimator:
+    def __init__(self):
+        self.nx = 9
+        
+        self.nz = 11
+        
+        self.x = SX.sym('x', self.nx)  
+        self.u = SX.sym('u', 6)        
+        self.z = SX.sym('z', self.nz)  
+        
+        self.pos = self.x[0:3]   
+        self.vel = self.x[3:6]    
+        self.att = self.x[6:9]   
+        
+        self.g = 9.81             
+        self.mass = 1.5           
+        self.dt = 0.01            
+        
+        self._initialize_covariances()
+        
+        self._setup_process_model()
+        self._setup_measurement_model()
+        
+    def _initialize_covariances(self):
+        self.Q = np.diag([
+            0.1, 0.1, 0.1,      
+            0.2, 0.2, 0.2,       
+            0.1, 0.1, 0.1         
+        ])
+        
+        self.R = np.diag([
+            2.0, 2.0, 3.0,        
+            0.1, 0.1, 0.1,       
+            0.01, 0.01, 0.01,     
+            0.5,                  
+            0.1                  
+        ])
+        
+    def _rotation_matrix(self, phi, theta, psi):
+        R_x = vertcat(
+            horzcat(1, 0, 0),
+            horzcat(0, cos(phi), -sin(phi)),
+            horzcat(0, sin(phi), cos(phi))
+        )
+        
+        R_y = vertcat(
+            horzcat(cos(theta), 0, sin(theta)),
+            horzcat(0, 1, 0),
+            horzcat(-sin(theta), 0, cos(theta))
+        )
+        
+        R_z = vertcat(
+            horzcat(cos(psi), -sin(psi), 0),
+            horzcat(sin(psi), cos(psi), 0),
+            horzcat(0, 0, 1)
+        )
+        
+        return R_z @ R_y @ R_x
+    
+    def _setup_process_model(self):
+        """Set up the nonlinear process model"""
+        phi, theta, psi = self.att[0], self.att[1], self.att[2]
+        
+        R = self._rotation_matrix(phi, theta, psi)
+        
+        thrust = self.u[0]
+        omega = self.u[1:4]  
+        
+        a_body = vertcat(0, 0, thrust/self.mass)
+        
+        a_inertial = R @ a_body + vertcat(0, 0, -self.g)
+        
+        pos_dot = self.vel
+        vel_dot = a_inertial
+        
+        att_dot = omega
+        
+        x_dot = vertcat(pos_dot, vel_dot, att_dot)
+        
+        k1 = x_dot
+        k2 = substitute(x_dot, self.x, self.x + self.dt/2 * k1)
+        k3 = substitute(x_dot, self.x, self.x + self.dt/2 * k2)
+        k4 = substitute(x_dot, self.x, self.x + self.dt * k3)
+        
+        f = self.x + self.dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        
+        self.f_func = Function('f', [self.x, self.u], [f])
+        self.F_func = Function('F', [self.x, self.u], [jacobian(f, self.x)])
+        
+    def _setup_measurement_model(self):
+        h_gps = self.pos
+        
+        phi, theta, psi = self.att[0], self.att[1], self.att[2]
+        R = self._rotation_matrix(phi, theta, psi)
+        
+        f_b = transpose(R) @ (self.vel - vertcat(0, 0, -self.g))
+        
+        omega = self.att  
+        
+        h_baro = self.pos[2]
+        
+        h_mag = self.att[2]  
+        
+        h = vertcat(h_gps, f_b, omega, h_baro, h_mag)
+        
+        self.h_func = Function('h', [self.x], [h])
+        self.H_func = Function('H', [self.x], [jacobian(h, self.x)])
+        
+    def predict(self, x_prev, P_prev, u):
+        x_pred = np.array(self.f_func(x_prev, u)).flatten()
+        
+        F = np.array(self.F_func(x_prev, u))
+        
+        P_pred = F @ P_prev @ F.T + self.Q
+        
+        return x_pred, P_pred
+    
+    def update(self, x_pred, P_pred, z_meas):
+
+        z_pred = np.array(self.h_func(x_pred)).flatten()
+        
+        H = np.array(self.H_func(x_pred))
+        
+        y = z_meas - z_pred
+        S = H @ P_pred @ H.T + self.R
+        
+        K = P_pred @ H.T @ np.linalg.inv(S)
+        
+        x_post = x_pred + K @ y
+        P_post = (np.eye(self.nx) - K @ H) @ P_pred
+        
+        return x_post, P_post
+    
+    def normalize_angles(self, x):
+        x[6:9] = np.mod(x[6:9] + np.pi, 2 * np.pi) - np.pi
+        return x
+
+def run_drone_estimator():
+
+    estimator = DronePositionEstimator()
+    
+    x = np.zeros(9)  
+    P = np.eye(9) * 0.1  
+    
+    z = np.array([
+        0.1, 0.2, 0.3,    
+        0.0, 0.0, 9.81,  
+        0.0, 0.0, 0.0,   
+        0.3,              
+        0.0               
+    ])
+    
+    u = np.array([
+        9.81 * 1.5,       
+        0.0, 0.0, 0.0,   
+        0.0, 0.0          
+    ])
+    
+    x_pred, P_pred = estimator.predict(x, P, u)
+    x_post, P_post = estimator.update(x_pred, P_pred, z)
+    
+    x_post = estimator.normalize_angles(x_post)
+    
+    return x_post, P_post
+
+def simulate_drone_position():
+    timesteps = 100
+    dt = 0.1  
+    time = np.linspace(0, timesteps * dt, timesteps)
+
+    x = np.sin(time)  
+    y = np.cos(time)  
+    z = 0.1 * time   
+
+    return time, x, y, z
+
+time, x, y, z = simulate_drone_position()
+
+plt.figure(figsize=(10, 6))
+plt.plot(time, x, label='x (Position along x-axis)', color='red')
+plt.plot(time, y, label='y (Position along y-axis)', color='blue')
+plt.plot(time, z, label='z (Position along z-axis)', color='green')
+plt.title('Simulated Drone Position Over Time')
+plt.xlabel('Time (s)')
+plt.ylabel('Position (m)')
+plt.legend()
+plt.grid(True)
+plt.show()
